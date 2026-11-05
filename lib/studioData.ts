@@ -1,4 +1,5 @@
 import { listCatalog } from "@/lib/catalog";
+import { ensureStarterChains } from "@/lib/starterChains";
 import type {
   GenerationRequest,
   LlmModel,
@@ -11,6 +12,7 @@ import type {
 } from "@/lib/types";
 
 export async function loadStudioCatalog() {
+  await ensureStarterChains();
   const [chains, steps, mixes, entries, models, images, requests, responses] =
     await Promise.all([
       listCatalog<PromptChain>("prompt_chains", "updated_at"),
