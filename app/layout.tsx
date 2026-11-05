@@ -1,17 +1,19 @@
 import type { Metadata } from "next";
-import { Plus_Jakarta_Sans, Space_Grotesk } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 
-const jakarta = Plus_Jakarta_Sans({
-  subsets: ["latin"],
+const jakarta = localFont({
+  src: "./fonts/PlusJakartaSans-latin-wght.woff2",
   variable: "--font-sans",
-  weight: ["400", "500", "600", "700", "800"],
+  weight: "400 800",
+  display: "swap",
 });
 
-const spaceGrotesk = Space_Grotesk({
-  subsets: ["latin"],
+const spaceGrotesk = localFont({
+  src: "./fonts/SpaceGrotesk-latin-wght.woff2",
   variable: "--font-display",
-  weight: ["500", "700"],
+  weight: "500 700",
+  display: "swap",
 });
 
 export const metadata: Metadata = {
