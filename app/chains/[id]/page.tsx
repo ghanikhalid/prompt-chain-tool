@@ -42,7 +42,6 @@ export default async function ChainDetailPage({
         chain={chain}
         steps={steps}
         models={data.models.rows.filter((model) => model.is_enabled)}
-        images={data.images.rows}
         media={media}
       />
     </StudioFrame>

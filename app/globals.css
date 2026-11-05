@@ -2288,10 +2288,163 @@ html[data-theme="light"] .btn-primary {
   color: #121216;
 }
 
+.walk-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) 1fr;
+  gap: 22px;
+  align-items: start;
+}
+
+.walk-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: calc(100vh - 180px);
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.walk-card {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  padding: 10px;
+  border-radius: 18px;
+  border: 1px solid var(--surface-border);
+  background: var(--surface-card);
+  color: inherit;
+  cursor: pointer;
+}
+
+.walk-card.active {
+  border-color: var(--surface-border-bright);
+  background: var(--surface-card-strong);
+}
+
+.walk-card-thumb {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 12px;
+  background: #08080b;
+}
+
+.walk-card-thumb-empty {
+  background: var(--run-card-bg);
+}
+
+.walk-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.walk-card-title {
+  font-size: 0.95rem;
+}
+
+.walk-card-line {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.walk-theater {
+  display: grid;
+  grid-template-columns: minmax(220px, 340px) 1fr;
+  gap: 22px;
+  align-items: start;
+}
+
+.walk-still {
+  position: sticky;
+  top: 88px;
+  overflow: hidden;
+  border-radius: 22px;
+  background: #08080b;
+  border: 1px solid var(--surface-border);
+}
+
+.walk-still img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+}
+
+.walk-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.walk-step {
+  padding: 16px 18px;
+  border-radius: 18px;
+  background: var(--run-card-bg);
+  border: 1px solid var(--surface-border);
+  opacity: 0;
+  transform: translateY(18px);
+}
+
+.walk-step.is-in {
+  animation: walk-in 0.6s ease forwards;
+}
+
+.walk-step-pending {
+  border-style: dashed;
+}
+
+.walk-step-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.walk-step-output {
+  margin: 10px 0 0;
+  font-family: var(--font-display), sans-serif;
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1.45;
+  color: var(--text-main);
+  white-space: pre-wrap;
+}
+
+@keyframes walk-in {
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 @media (max-width: 1024px) {
   .chain-editor-grid,
   .playground-split,
-  .field-grid {
+  .field-grid,
+  .walk-layout,
+  .walk-theater {
     grid-template-columns: 1fr;
+  }
+
+  .walk-still {
+    position: static;
+  }
+
+  .walk-rail {
+    max-height: none;
+    flex-direction: row;
+    overflow-x: auto;
+  }
+
+  .walk-card {
+    min-width: 260px;
   }
 }

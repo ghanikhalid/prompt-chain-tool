@@ -7,7 +7,7 @@ import {
 } from "@google/genai";
 import { revalidatePath } from "next/cache";
 import { requireStudioAdmin } from "@/lib/auth";
-import { encodeRunPrompt } from "@/lib/runMedia";
+import { encodeRunRecord, parseRunRecord, type ChainWalk } from "@/lib/runMedia";
 import { createClient } from "@/lib/supabaseServer";
 import type {
   LlmModel,
@@ -28,19 +28,15 @@ const MAX_BYTES = 4.5 * 1024 * 1024;
 const DEFAULT_CAPTION_PROMPT =
   "Look at this photograph. Write one short caption that only works because of what is actually in the frame.";
 const CANDIDATE_MODELS = [
-  "gemini-3.8-flash",
-  "gemini-3.7-flash",
-  "gemini-3.6-flash",
-  "gemini-3.5-flash",
-  "gemini-3.5-flash-lite",
-  "gemini-3.1-flash-lite",
   "gemini-2.5-flash",
   "gemini-2.0-flash",
+  "gemini-3.5-flash",
 ];
 
 function revalidateStudio(chainId?: string) {
   revalidatePath("/");
   revalidatePath("/chains");
+  revalidatePath("/try");
   revalidatePath("/mix");
   revalidatePath("/runs");
   if (chainId) revalidatePath(`/chains/${chainId}`);
@@ -174,7 +170,9 @@ async function generateStepText(
   const keys = [
     preferredKey,
     ...CANDIDATE_MODELS.filter((key) => key !== preferredKey),
-  ].filter((key): key is string => Boolean(key));
+  ]
+    .filter((key): key is string => Boolean(key))
+    .slice(0, 3);
 
   let lastError: unknown = null;
   for (const model of keys) {
@@ -279,8 +277,8 @@ export async function saveChainAction(input: {
 
   const name = input.name.trim();
   if (!name) return { success: false, error: "Give the chain a name." };
-  if (input.steps.length === 0) {
-    return { success: false, error: "A chain needs at least one step." };
+  if (input.steps.length < 2) {
+    return { success: false, error: "A chain needs at least two steps." };
   }
 
   const supabase = await createClient();
@@ -428,18 +426,19 @@ export async function saveMixAction(input: {
   return { success: true };
 }
 
-export async function runChainAction(formData: FormData): Promise<{
+export async function startWalkAction(formData: FormData): Promise<{
   success: boolean;
   error?: string;
-  caption?: string;
-  steps?: RunStepResult[];
+  requestId?: string;
+  imageUrl?: string;
+  steps?: Array<{ id: string; name: string }>;
 }> {
   const gate = await requireStudioAdmin();
   if (!gate.ok) return { success: false, error: gate.error };
 
   const chainId = String(formData.get("chain_id") || "").trim();
   const note = String(formData.get("note") || "").trim();
-  if (!chainId) return { success: false, error: "Pick a chain to run." };
+  if (!chainId) return { success: false, error: "Pick a chain to walk." };
 
   let image: { bytes: Buffer; mimeType: string };
   try {
@@ -452,33 +451,31 @@ export async function runChainAction(formData: FormData): Promise<{
   }
 
   const supabase = await createClient();
-  const [{ data: chain }, { data: stepRows }, { data: modelRows }] =
-    await Promise.all([
-      supabase.from("prompt_chains").select("*").eq("id", chainId).maybeSingle(),
-      supabase
-        .from("prompt_chain_steps")
-        .select("*")
-        .eq("chain_id", chainId)
-        .order("step_order", { ascending: true }),
-      supabase.from("llm_models").select("*"),
-    ]);
+  const { data: stepRows } = await supabase
+    .from("prompt_chain_steps")
+    .select("id, name, step_order")
+    .eq("chain_id", chainId)
+    .order("step_order", { ascending: true });
 
-  if (!chain) return { success: false, error: "That chain is gone." };
-  const steps = (stepRows ?? []) as PromptChainStep[];
-  if (steps.length === 0) {
-    return { success: false, error: "This chain has no steps yet." };
+  const steps = (stepRows ?? []) as Array<{
+    id: string;
+    name: string;
+    step_order: number;
+  }>;
+  if (steps.length < 2) {
+    return {
+      success: false,
+      error: "This chain needs at least two steps before you can walk it.",
+    };
   }
-
-  const models = (modelRows ?? []) as LlmModel[];
-  const modelById = new Map(models.map((model) => [model.id, model]));
 
   const { data: request, error: requestError } = await supabase
     .from("generation_requests")
     .insert({
       user_id: gate.userId,
-      prompt: note || steps[0]?.prompt_template || DEFAULT_CAPTION_PROMPT,
+      prompt: note,
       chain_id: chainId,
-      model_id: steps[0]?.model_id ?? null,
+      model_id: null,
       status: "pending",
     })
     .select("id")
@@ -487,80 +484,162 @@ export async function runChainAction(formData: FormData): Promise<{
   if (requestError || !request) {
     return {
       success: false,
-      error: requestError?.message || "Could not start the run.",
+      error: requestError?.message || "Could not start the walk.",
     };
   }
 
   const storedUrl =
     (await persistRunImage(
       supabase,
-      gate.userId,
+      gate.userId as string,
       image.bytes,
       image.mimeType,
       chainId,
       request.id
     )) || String(formData.get("image_url") || "").trim();
 
-  if (storedUrl) {
-    await supabase
-      .from("generation_requests")
-      .update({ prompt: encodeRunPrompt(storedUrl, note) })
-      .eq("id", request.id);
+  if (!storedUrl) {
+    await supabase.from("generation_requests").delete().eq("id", request.id);
+    return {
+      success: false,
+      error: "Could not keep the photo for the later steps.",
+    };
   }
 
-  const results: RunStepResult[] = [];
-  let previous = "";
-  let lastModelId: string | null = steps[0]?.model_id ?? null;
+  await supabase
+    .from("generation_requests")
+    .update({ prompt: encodeRunRecord(storedUrl, note, { steps: [] }) })
+    .eq("id", request.id);
+
+  return {
+    success: true,
+    requestId: request.id,
+    imageUrl: storedUrl,
+    steps: steps.map((step) => ({ id: step.id, name: step.name })),
+  };
+}
+
+export async function runWalkStepAction(input: {
+  requestId: string;
+  stepId: string;
+  lastModelKey?: string | null;
+}): Promise<{
+  success: boolean;
+  error?: string;
+  step?: RunStepResult;
+  done?: boolean;
+  modelKey?: string;
+}> {
+  const gate = await requireStudioAdmin();
+  if (!gate.ok) return { success: false, error: gate.error };
+
+  const supabase = await createClient();
+  const { data: request } = await supabase
+    .from("generation_requests")
+    .select("*")
+    .eq("id", input.requestId)
+    .maybeSingle();
+
+  if (!request || request.user_id !== gate.userId) {
+    return { success: false, error: "That walk is gone." };
+  }
+  if (request.status === "completed") {
+    return { success: false, error: "This walk already finished." };
+  }
+
+  const parsed = parseRunRecord(String(request.prompt || ""));
+  if (!parsed.imageUrl) {
+    return { success: false, error: "This walk has no photo to look at." };
+  }
+
+  const [{ data: chain }, { data: stepRows }, { data: modelRows }, image] =
+    await Promise.all([
+      supabase
+        .from("prompt_chains")
+        .select("name")
+        .eq("id", request.chain_id)
+        .maybeSingle(),
+      supabase
+        .from("prompt_chain_steps")
+        .select("*")
+        .eq("chain_id", request.chain_id)
+        .order("step_order", { ascending: true }),
+      supabase.from("llm_models").select("*"),
+      fetchImage(parsed.imageUrl),
+    ]);
+
+  if (!image.ok) return { success: false, error: image.error };
+  const steps = (stepRows ?? []) as PromptChainStep[];
+  const nextIndex = parsed.walk?.steps.length ?? 0;
+  const step = steps[nextIndex];
+  if (!step || step.id !== input.stepId) {
+    return { success: false, error: "That is not the next step in this walk." };
+  }
+
+  const models = (modelRows ?? []) as LlmModel[];
+  const modelById = new Map(models.map((model) => [model.id, model]));
+  const catalogModel = step.model_id ? modelById.get(step.model_id) : undefined;
+  const previous = parsed.walk?.steps[nextIndex - 1]?.output ?? "";
+  const prompt = interpolate(
+    withPrevious(step.prompt_template || DEFAULT_CAPTION_PROMPT, previous),
+    {
+      previous,
+      input: parsed.note,
+      step: step.name,
+      chain: String(chain?.name ?? ""),
+    }
+  );
 
   try {
-    for (const step of steps) {
-      const model = step.model_id ? modelById.get(step.model_id) : undefined;
-      const prompt = interpolate(
-        withPrevious(step.prompt_template || DEFAULT_CAPTION_PROMPT, previous),
-        {
-          previous,
-          input: note,
-          step: step.name,
-          chain: String(chain.name ?? ""),
-        }
-      );
-      const started = Date.now();
-      const generated = await generateStepText(
-        image.bytes,
-        image.mimeType,
-        prompt,
-        model?.model_key
-      );
-      const latencyMs = Date.now() - started;
-      const usedModel =
-        models.find((item) => item.model_key === generated.modelKey) ?? model ?? null;
-      lastModelId = usedModel?.id ?? lastModelId;
+    const started = Date.now();
+    const generated = await generateStepText(
+      image.bytes,
+      image.mimeType,
+      prompt,
+      input.lastModelKey || catalogModel?.model_key
+    );
+    const latencyMs = Date.now() - started;
+    const usedModel =
+      models.find((item) => item.model_key === generated.modelKey) ??
+      catalogModel ??
+      null;
 
-      await supabase.from("llm_responses").insert({
-        request_id: request.id,
-        model_id: usedModel?.id ?? null,
-        content: generated.text,
-        latency_ms: latencyMs,
-      });
+    await supabase.from("llm_responses").insert({
+      request_id: request.id,
+      model_id: usedModel?.id ?? null,
+      content: generated.text,
+      latency_ms: latencyMs,
+    });
 
-      results.push({
-        id: step.id,
-        name: step.name,
-        prompt,
-        output: generated.text,
-        modelName: usedModel?.name || generated.modelKey,
-        latencyMs,
-      });
-      previous = generated.text;
-    }
+    const result: RunStepResult = {
+      id: step.id,
+      name: step.name,
+      prompt,
+      output: generated.text,
+      modelName: usedModel?.name || generated.modelKey,
+      latencyMs,
+    };
+    const walk: ChainWalk = {
+      steps: [...(parsed.walk?.steps ?? []), result],
+    };
+    const done = walk.steps.length >= steps.length;
 
     await supabase
       .from("generation_requests")
       .update({
-        status: "completed",
-        model_id: lastModelId,
+        prompt: encodeRunRecord(parsed.imageUrl, parsed.note, walk),
+        status: done ? "completed" : "pending",
+        model_id: usedModel?.id ?? request.model_id,
       })
       .eq("id", request.id);
+
+    if (done) revalidateStudio(request.chain_id);
+    return {
+      success: true,
+      step: result,
+      done,
+      modelKey: generated.modelKey,
+    };
   } catch (err) {
     await supabase
       .from("generation_requests")
@@ -568,14 +647,22 @@ export async function runChainAction(formData: FormData): Promise<{
       .eq("id", request.id);
     return {
       success: false,
-      error: err instanceof Error ? err.message : "The chain stopped mid-run.",
+      error: err instanceof Error ? err.message : "This step did not finish.",
     };
   }
+}
 
-  revalidateStudio(chainId);
-  return {
-    success: true,
-    caption: previous,
-    steps: results,
-  };
+async function fetchImage(url: string): Promise<
+  | { ok: true; bytes: Buffer; mimeType: string }
+  | { ok: false; error: string }
+> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return { ok: false, error: "Could not reload the photo." };
+    const mime = (res.headers.get("content-type") || "image/jpeg").split(";")[0];
+    const bytes = Buffer.from(await res.arrayBuffer());
+    return { ok: true, bytes, mimeType: mime };
+  } catch {
+    return { ok: false, error: "Could not reload the photo." };
+  }
 }

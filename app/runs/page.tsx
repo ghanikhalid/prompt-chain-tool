@@ -26,7 +26,6 @@ export default async function RunsPage() {
         requests={data.requests.rows}
         responses={data.responses.rows}
         chains={data.chains.rows}
-        models={data.models.rows}
         missing={data.requests.missing}
         error={data.requests.error || data.responses.error}
       />

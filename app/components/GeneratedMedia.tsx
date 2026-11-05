@@ -10,7 +10,7 @@ function shortDate(value: string) {
 
 export default function GeneratedMedia({
   items,
-  emptyLabel = "Run this chain on a photo to see the stills it makes.",
+  emptyLabel = "Walk this chain on Try to see the stills it makes.",
 }: {
   items: ChainMediaItem[];
   emptyLabel?: string;
@@ -35,12 +35,6 @@ export default function GeneratedMedia({
             <div className="generated-media-stage">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={item.imageUrl} alt="" />
-              {item.caption ? <div className="meme-scrim" /> : null}
-              {item.caption ? (
-                <p className="meme-overlay-caption">
-                  {item.caption.split("\n")[0]}
-                </p>
-              ) : null}
             </div>
           ) : null}
           <div className="generated-media-body">

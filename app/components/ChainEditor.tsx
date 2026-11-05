@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   deleteChainAction,
@@ -8,14 +9,12 @@ import {
   saveChainAction,
 } from "@/app/actions";
 import GeneratedMedia from "./GeneratedMedia";
-import Playground from "./Playground";
 import type { ChainMediaItem } from "@/lib/runMedia";
 import { IconPlus, IconTrash } from "./Icons";
 import type {
   LlmModel,
   PromptChain,
   PromptChainStep,
-  StudioImage,
 } from "@/lib/types";
 
 type DraftStep = {
@@ -29,13 +28,11 @@ export default function ChainEditor({
   chain,
   steps,
   models,
-  images,
   media,
 }: {
   chain: PromptChain;
   steps: PromptChainStep[];
   models: LlmModel[];
-  images: StudioImage[];
   media: ChainMediaItem[];
 }) {
   const router = useRouter();
@@ -82,6 +79,11 @@ export default function ChainEditor({
   };
 
   const save = () => {
+    if (drafts.length < 2) {
+      setOk(false);
+      setStatus("A chain needs at least two steps.");
+      return;
+    }
     startTransition(async () => {
       const res = await saveChainAction({
         id: chain.id,
@@ -125,13 +127,18 @@ export default function ChainEditor({
           </h1>
         </div>
         <p className="page-sub">
-          Write the steps in order. The last line is what members see on the
-          photo.
+          Each step is its own prompt. Later steps get the photo and whatever
+          the last step said.
         </p>
       </div>
 
-      <div className="chain-editor-grid">
-        <section className="telemetry-panel">
+      <div className="admin-quick-actions" style={{ marginBottom: "18px" }}>
+        <Link href={`/try?chain=${chain.id}`} className="btn-primary">
+          Try this chain
+        </Link>
+      </div>
+
+      <section className="telemetry-panel">
           <div className="field-grid">
             <label className="admin-field-label">
               <span className="kicker">Name</span>
@@ -202,7 +209,11 @@ export default function ChainEditor({
                       type="button"
                       className="btn-ghost danger-btn"
                       onClick={() =>
-                        setDrafts((prev) => prev.filter((_, i) => i !== index))
+                        setDrafts((prev) =>
+                          prev.length <= 2
+                            ? prev
+                            : prev.filter((_, i) => i !== index)
+                        )
                       }
                     >
                       <IconTrash size={14} />
@@ -298,13 +309,6 @@ export default function ChainEditor({
             <p className={ok ? "bootstrap-success" : "form-error"}>{status}</p>
           ) : null}
         </section>
-
-        <Playground
-          chains={[chain]}
-          images={images}
-          defaultChainId={chain.id}
-        />
-      </div>
 
       <section>
         <div className="feed-header">

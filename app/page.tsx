@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { loadStudioUser } from "@/lib/auth";
 import { loadStudioCatalog } from "@/lib/studioData";
-import Playground from "@/app/components/Playground";
 import { LockedView, StudioFrame } from "@/app/components/Shell";
 
 export const dynamic = "force-dynamic";
@@ -42,11 +41,11 @@ export default async function HomePage() {
           </p>
         </div>
         <div className="admin-quick-actions">
-          <Link href="/chains" className="btn-primary">
-            Open chains
+          <Link href="/try" className="btn-primary">
+            Try a chain
           </Link>
-          <Link href="/mix" className="btn-ghost">
-            Adjust the mix
+          <Link href="/chains" className="btn-ghost">
+            Open chains
           </Link>
         </div>
       </section>
@@ -80,8 +79,6 @@ export default async function HomePage() {
           <p className="kpi-label">Tried in this room</p>
         </article>
       </section>
-
-      <Playground chains={chains} images={data.images.rows} />
 
       {chains.length > 0 ? (
         <section>

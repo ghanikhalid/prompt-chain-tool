@@ -4,7 +4,7 @@ import AuthButton from "./AuthButton";
 import ThemeToggle from "./ThemeToggle";
 import { IconCamera, IconSparkle } from "./Icons";
 
-export type StudioTab = "studio" | "chains" | "mix" | "runs";
+export type StudioTab = "studio" | "try" | "chains" | "mix" | "runs";
 
 export default function Header({
   user,
@@ -26,8 +26,11 @@ export default function Header({
       {isSuperadmin && (
         <nav className="site-nav" aria-label="Studio navigation">
           <Link href="/" className={`nav-pill ${active === "studio" ? "active" : ""}`}>
-            <IconCamera size={14} />
             <span>Studio</span>
+          </Link>
+          <Link href="/try" className={`nav-pill ${active === "try" ? "active" : ""}`}>
+            <IconCamera size={14} />
+            <span>Try</span>
           </Link>
           <Link
             href="/chains"

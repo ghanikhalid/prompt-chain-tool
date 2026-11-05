@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo, useRef, useState, useTransition } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { runChainAction } from "@/app/actions";
+import { runWalkStepAction, startWalkAction } from "@/app/actions";
 import type { PromptChain, RunStepResult, StudioImage } from "@/lib/types";
 import { IconCamera } from "./Icons";
+import WalkTheater from "./WalkTheater";
 
 export default function Playground({
   chains,
@@ -17,30 +18,30 @@ export default function Playground({
 }) {
   const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
-  const [isPending, startTransition] = useTransition();
   const [chainId, setChainId] = useState(defaultChainId || chains[0]?.id || "");
   const [note, setNote] = useState("");
   const [imageUrl, setImageUrl] = useState("");
   const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [results, setResults] = useState<RunStepResult[] | null>(null);
-  const [caption, setCaption] = useState<string | null>(null);
+  const [running, setRunning] = useState(false);
+  const [results, setResults] = useState<RunStepResult[]>([]);
+  const [pendingName, setPendingName] = useState<string | null>(null);
+  const [walkImage, setWalkImage] = useState<string | null>(null);
 
-  const activeChains = useMemo(
-    () => chains.filter((chain) => chain.is_active) || chains,
-    [chains]
-  );
-  const options = activeChains.length > 0 ? activeChains : chains;
+  const options = useMemo(() => {
+    const live = chains.filter((chain) => chain.is_active);
+    return live.length > 0 ? live : chains;
+  }, [chains]);
 
   const onFile = (file: File | undefined) => {
     if (!file) return;
     setImageUrl("");
     setPreview(URL.createObjectURL(file));
-    setResults(null);
-    setCaption(null);
+    setResults([]);
+    setPendingName(null);
   };
 
-  const run = () => {
+  const run = async () => {
     const file = fileRef.current?.files?.[0];
     if (!file && !imageUrl) {
       setError("Drop a photo first.");
@@ -58,16 +59,43 @@ export default function Playground({
     if (imageUrl) form.set("image_url", imageUrl);
 
     setError(null);
-    startTransition(async () => {
-      const res = await runChainAction(form);
-      if (!res.success) {
-        setError(res.error || "The chain did not finish.");
+    setRunning(true);
+    setResults([]);
+    setPendingName(null);
+
+    try {
+      const started = await startWalkAction(form);
+      if (!started.success || !started.requestId || !started.steps) {
+        setError(started.error || "Could not start the walk.");
         return;
       }
-      setResults(res.steps ?? []);
-      setCaption(res.caption ?? null);
+      setWalkImage(started.imageUrl || preview);
+      let lastModelKey: string | null = null;
+      const collected: RunStepResult[] = [];
+
+      for (const step of started.steps) {
+        setPendingName(step.name);
+        const res = await runWalkStepAction({
+          requestId: started.requestId,
+          stepId: step.id,
+          lastModelKey,
+        });
+        if (!res.success || !res.step) {
+          setError(res.error || "The walk stopped mid-step.");
+          setPendingName(null);
+          return;
+        }
+        lastModelKey = res.modelKey || lastModelKey;
+        collected.push(res.step);
+        setResults([...collected]);
+      }
+
+      setPendingName(null);
       router.refresh();
-    });
+    } finally {
+      setRunning(false);
+      setPendingName(null);
+    }
   };
 
   return (
@@ -77,8 +105,8 @@ export default function Playground({
           <span className="kicker">Try it</span>
           <h2 className="upload-heading">Drop a photo. Walk the chain.</h2>
           <p className="card-copy">
-            Each step sees the picture. Later steps can use{" "}
-            <code>{"{{previous}}"}</code> to punch up the last line.
+            Each step is its own prompt. Later steps see the photo and the last
+            output.
           </p>
         </div>
       </div>
@@ -102,12 +130,6 @@ export default function Playground({
               <div className="dropzone-preview-wrap">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={preview} alt="" className="dropzone-preview" />
-                {caption ? <div className="meme-scrim" /> : null}
-                {caption ? (
-                  <p className="meme-overlay-caption">
-                    {caption.split("\n").find((line) => line.trim()) ?? caption}
-                  </p>
-                ) : null}
                 <span className="dropzone-change-pill">Change photo</span>
               </div>
             ) : (
@@ -132,8 +154,8 @@ export default function Playground({
                     if (fileRef.current) fileRef.current.value = "";
                     setImageUrl(image.image_url);
                     setPreview(image.image_url);
-                    setResults(null);
-                    setCaption(null);
+                    setResults([]);
+                    setPendingName(null);
                   }}
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -151,7 +173,6 @@ export default function Playground({
               className="admin-input"
               value={chainId}
               onChange={(event) => setChainId(event.target.value)}
-              disabled={Boolean(defaultChainId)}
             >
               {options.map((chain) => (
                 <option key={chain.id} value={chain.id}>
@@ -193,31 +214,22 @@ export default function Playground({
           <button
             type="button"
             className="btn-primary"
-            disabled={isPending || options.length === 0}
-            onClick={run}
+            disabled={running || options.length === 0}
+            onClick={() => void run()}
           >
-            {isPending ? "Looking at the frame…" : "Run chain"}
+            {running ? "Walking the chain…" : "Walk chain"}
           </button>
         </div>
       </div>
 
-      {results ? (
-        <div className="run-log" style={{ marginTop: "24px" }}>
-          {results.map((step, index) => (
-            <article key={step.id} className="run-step-card">
-              <div className="step-head">
-                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                  <span className="step-index">{index + 1}</span>
-                  <strong>{step.name}</strong>
-                </div>
-                <span className="count-pill">
-                  {step.modelName} · {step.latencyMs}ms
-                </span>
-              </div>
-              <p className="template-hint">{step.prompt}</p>
-              <p className="run-step-output">{step.output}</p>
-            </article>
-          ))}
+      {results.length > 0 || pendingName ? (
+        <div style={{ marginTop: "28px" }}>
+          <WalkTheater
+            imageUrl={walkImage || preview}
+            steps={results}
+            pendingName={pendingName}
+            live
+          />
         </div>
       ) : null}
     </section>
