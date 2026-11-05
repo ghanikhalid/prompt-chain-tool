@@ -7,12 +7,16 @@ import {
 } from "@google/genai";
 import { revalidatePath } from "next/cache";
 import { requireStudioAdmin } from "@/lib/auth";
+import { encodeRunPrompt } from "@/lib/runMedia";
 import { createClient } from "@/lib/supabaseServer";
 import type {
   LlmModel,
   PromptChainStep,
   RunStepResult,
 } from "@/lib/types";
+
+const IMAGE_BUCKET = "studio-images";
+const FALLBACK_BUCKET = "avatars";
 
 const ALLOWED_TYPES = new Set([
   "image/jpeg",
@@ -55,13 +59,74 @@ function interpolate(template: string, vars: Record<string, string>) {
 function parseOutput(raw: string) {
   const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
   try {
-    const parsed = JSON.parse(cleaned) as { caption?: string; text?: string };
-    if (parsed.caption?.trim()) return parsed.caption.trim();
-    if (parsed.text?.trim()) return parsed.text.trim();
+    const parsed = JSON.parse(cleaned) as {
+      caption?: string;
+      text?: string;
+      captions?: unknown;
+    };
+    if (typeof parsed.caption === "string" && parsed.caption.trim()) {
+      return parsed.caption.trim();
+    }
+    if (typeof parsed.text === "string" && parsed.text.trim()) {
+      return parsed.text.trim();
+    }
+    if (Array.isArray(parsed.captions)) {
+      return parsed.captions
+        .map((item) => String(item).trim())
+        .filter(Boolean)
+        .join("\n");
+    }
+    if (Array.isArray(parsed)) {
+      return parsed.map((item) => String(item).trim()).filter(Boolean).join("\n");
+    }
   } catch {
     // keep raw
   }
   return cleaned.replace(/^["']|["']$/g, "").trim();
+}
+
+function withPrevious(template: string, previous: string) {
+  if (!previous) return template;
+  if (/\{\{\s*previous\s*\}\}/.test(template)) return template;
+  return `${template}\n\nPrevious step:\n${previous}`;
+}
+
+async function persistRunImage(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+  bytes: Buffer,
+  mimeType: string,
+  chainId: string,
+  requestId: string
+) {
+  const ext = mimeType.split("/")[1]?.replace("jpeg", "jpg") || "jpg";
+  const path = `${userId}/${requestId}.${ext}`;
+  const first = await supabase.storage.from(IMAGE_BUCKET).upload(path, bytes, {
+    contentType: mimeType,
+    upsert: true,
+  });
+
+  let storagePath = path;
+  let bucket = IMAGE_BUCKET;
+  if (first.error) {
+    const fallbackPath = `studio/${path}`;
+    const fallback = await supabase.storage
+      .from(FALLBACK_BUCKET)
+      .upload(fallbackPath, bytes, { contentType: mimeType, upsert: true });
+    if (fallback.error) return null;
+    storagePath = fallbackPath;
+    bucket = FALLBACK_BUCKET;
+  }
+
+  const imageUrl = supabase.storage.from(bucket).getPublicUrl(storagePath).data
+    .publicUrl;
+  await supabase.from("images").insert({
+    user_id: userId,
+    storage_path: storagePath,
+    image_url: imageUrl,
+    alt_text: `chain:${chainId}|request:${requestId}`,
+  });
+  return imageUrl;
 }
 
 async function bytesFromForm(formData: FormData) {
@@ -165,13 +230,33 @@ export async function createChainAction(): Promise<{
     .eq("is_enabled", true)
     .limit(1);
 
-  await supabase.from("prompt_chain_steps").insert({
-    chain_id: chain.id,
-    step_order: 1,
-    name: "Write caption",
-    prompt_template: DEFAULT_CAPTION_PROMPT,
-    model_id: models?.[0]?.id ?? null,
-  });
+  const modelId = models?.[0]?.id ?? null;
+  await supabase.from("prompt_chain_steps").insert([
+    {
+      chain_id: chain.id,
+      step_order: 1,
+      name: "Describe the photo",
+      prompt_template:
+        "Look at this photograph. Describe what is actually in the frame in a few sentences — objects, faces, pose, setting, and timing. No caption yet.",
+      model_id: modelId,
+    },
+    {
+      chain_id: chain.id,
+      step_order: 2,
+      name: "Find the joke",
+      prompt_template:
+        "Here is a description of a photo:\n{{previous}}\n\nSay something funny about it. Dry, specific, not generic. One or two sentences.",
+      model_id: modelId,
+    },
+    {
+      chain_id: chain.id,
+      step_order: 3,
+      name: "Five captions",
+      prompt_template:
+        "Here is a funny take on a photo:\n{{previous}}\n\nWrite five short, funny captions. Each on its own line. No numbers, no quotes, no hashtags. Each caption should only work because of what is in the frame.",
+      model_id: modelId,
+    },
+  ]);
 
   revalidateStudio(chain.id);
   return { success: true, id: chain.id };
@@ -268,6 +353,31 @@ export async function deleteChainAction(
   const { error } = await supabase.from("prompt_chains").delete().eq("id", id);
   if (error) return { success: false, error: error.message };
   revalidateStudio();
+  return { success: true };
+}
+
+export async function reorderStepsAction(
+  chainId: string,
+  orderedIds: string[]
+): Promise<{ success: boolean; error?: string }> {
+  const gate = await requireStudioAdmin();
+  if (!gate.ok) return { success: false, error: gate.error };
+  if (orderedIds.length === 0) {
+    return { success: false, error: "Nothing to reorder." };
+  }
+
+  const supabase = await createClient();
+  const now = new Date().toISOString();
+  for (const [index, id] of orderedIds.entries()) {
+    const { error } = await supabase
+      .from("prompt_chain_steps")
+      .update({ step_order: index + 1, updated_at: now })
+      .eq("id", id)
+      .eq("chain_id", chainId);
+    if (error) return { success: false, error: error.message };
+  }
+
+  revalidateStudio(chainId);
   return { success: true };
 }
 
@@ -381,6 +491,23 @@ export async function runChainAction(formData: FormData): Promise<{
     };
   }
 
+  const storedUrl =
+    (await persistRunImage(
+      supabase,
+      gate.userId,
+      image.bytes,
+      image.mimeType,
+      chainId,
+      request.id
+    )) || String(formData.get("image_url") || "").trim();
+
+  if (storedUrl) {
+    await supabase
+      .from("generation_requests")
+      .update({ prompt: encodeRunPrompt(storedUrl, note) })
+      .eq("id", request.id);
+  }
+
   const results: RunStepResult[] = [];
   let previous = "";
   let lastModelId: string | null = steps[0]?.model_id ?? null;
@@ -388,12 +515,15 @@ export async function runChainAction(formData: FormData): Promise<{
   try {
     for (const step of steps) {
       const model = step.model_id ? modelById.get(step.model_id) : undefined;
-      const prompt = interpolate(step.prompt_template || DEFAULT_CAPTION_PROMPT, {
-        previous,
-        input: note,
-        step: step.name,
-        chain: String(chain.name ?? ""),
-      });
+      const prompt = interpolate(
+        withPrevious(step.prompt_template || DEFAULT_CAPTION_PROMPT, previous),
+        {
+          previous,
+          input: note,
+          step: step.name,
+          chain: String(chain.name ?? ""),
+        }
+      );
       const started = Date.now();
       const generated = await generateStepText(
         image.bytes,

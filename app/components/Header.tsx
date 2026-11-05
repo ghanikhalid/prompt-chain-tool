@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { User } from "@supabase/supabase-js";
 import AuthButton from "./AuthButton";
+import ThemeToggle from "./ThemeToggle";
 import { IconCamera, IconSparkle } from "./Icons";
 
 export type StudioTab = "studio" | "chains" | "mix" | "runs";
@@ -45,6 +46,7 @@ export default function Header({
       )}
 
       <div className="header-actions">
+        <ThemeToggle />
         <AuthButton user={user} />
       </div>
     </header>

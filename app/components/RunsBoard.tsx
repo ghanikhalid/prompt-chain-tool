@@ -1,3 +1,4 @@
+import { parseRunPrompt } from "@/lib/runMedia";
 import type {
   GenerationRequest,
   LlmModel,
@@ -69,6 +70,7 @@ export default function RunsBoard({
           {requests.map((request) => {
             const replies = repliesByRequest.get(request.id) ?? [];
             const last = replies[replies.length - 1];
+            const parsed = parseRunPrompt(request.prompt);
             return (
               <article key={request.id} className="run-step-card">
                 <div className="step-head">
@@ -80,7 +82,13 @@ export default function RunsBoard({
                   </div>
                   <span className="count-pill">{shortDate(request.created_at)}</span>
                 </div>
-                <p className="card-copy">{request.prompt}</p>
+                {parsed.imageUrl ? (
+                  <div className="generated-media-stage" style={{ marginTop: "12px", borderRadius: "16px", overflow: "hidden" }}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={parsed.imageUrl} alt="" />
+                  </div>
+                ) : null}
+                {parsed.note ? <p className="card-copy">{parsed.note}</p> : null}
                 {last ? (
                   <p className="run-step-output">{last.content}</p>
                 ) : null}

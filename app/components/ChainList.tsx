@@ -80,7 +80,8 @@ export default function ChainList({
           <span className="kicker">Empty studio</span>
           <h2 className="gate-title">No chains yet</h2>
           <p className="empty-sub">
-            Start with one step: look at the photo, write the caption.
+            New chains start with three steps: describe the photo, find the
+            joke, then write five captions.
           </p>
         </section>
       ) : (

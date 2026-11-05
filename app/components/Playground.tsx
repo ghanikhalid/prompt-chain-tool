@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { runChainAction } from "@/app/actions";
 import type { PromptChain, RunStepResult, StudioImage } from "@/lib/types";
 import { IconCamera } from "./Icons";
@@ -14,6 +15,7 @@ export default function Playground({
   images: StudioImage[];
   defaultChainId?: string;
 }) {
+  const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
   const [isPending, startTransition] = useTransition();
   const [chainId, setChainId] = useState(defaultChainId || chains[0]?.id || "");
@@ -64,6 +66,7 @@ export default function Playground({
       }
       setResults(res.steps ?? []);
       setCaption(res.caption ?? null);
+      router.refresh();
     });
   };
 
@@ -101,7 +104,9 @@ export default function Playground({
                 <img src={preview} alt="" className="dropzone-preview" />
                 {caption ? <div className="meme-scrim" /> : null}
                 {caption ? (
-                  <p className="meme-overlay-caption">{caption}</p>
+                  <p className="meme-overlay-caption">
+                    {caption.split("\n").find((line) => line.trim()) ?? caption}
+                  </p>
                 ) : null}
                 <span className="dropzone-change-pill">Change photo</span>
               </div>

@@ -4,9 +4,12 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   deleteChainAction,
+  reorderStepsAction,
   saveChainAction,
 } from "@/app/actions";
+import GeneratedMedia from "./GeneratedMedia";
 import Playground from "./Playground";
+import type { ChainMediaItem } from "@/lib/runMedia";
 import { IconPlus, IconTrash } from "./Icons";
 import type {
   LlmModel,
@@ -27,11 +30,13 @@ export default function ChainEditor({
   steps,
   models,
   images,
+  media,
 }: {
   chain: PromptChain;
   steps: PromptChainStep[];
   models: LlmModel[];
   images: StudioImage[];
+  media: ChainMediaItem[];
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -51,15 +56,29 @@ export default function ChainEditor({
   const [status, setStatus] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
 
-  const move = (index: number, dir: -1 | 1) => {
-    setDrafts((prev) => {
-      const next = [...prev];
-      const target = index + dir;
-      if (target < 0 || target >= next.length) return prev;
-      const [item] = next.splice(index, 1);
-      next.splice(target, 0, item);
-      return next;
+  const persistOrder = (next: DraftStep[]) => {
+    const ids = next.map((step) => step.id).filter((id): id is string => Boolean(id));
+    if (ids.length === 0 || ids.length !== next.length) return;
+    startTransition(async () => {
+      const res = await reorderStepsAction(chain.id, ids);
+      if (!res.success) {
+        setOk(false);
+        setStatus(res.error || "Could not reorder.");
+        return;
+      }
+      setOk(true);
+      setStatus("Order saved.");
     });
+  };
+
+  const move = (index: number, dir: -1 | 1) => {
+    const target = index + dir;
+    if (target < 0 || target >= drafts.length) return;
+    const next = [...drafts];
+    const [item] = next.splice(index, 1);
+    next.splice(target, 0, item);
+    setDrafts(next);
+    persistOrder(next);
   };
 
   const save = () => {
@@ -286,6 +305,14 @@ export default function ChainEditor({
           defaultChainId={chain.id}
         />
       </div>
+
+      <section>
+        <div className="feed-header">
+          <h2 className="section-title">Media from this chain</h2>
+          <span className="count-pill">{media.length}</span>
+        </div>
+        <GeneratedMedia items={media} />
+      </section>
     </div>
   );
 }
