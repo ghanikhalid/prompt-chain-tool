@@ -1,6 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
+import { deleteWalkAction } from "@/app/actions";
 import { buildWalkList, type WalkListItem } from "@/lib/runMedia";
 import type {
   GenerationRequest,
@@ -8,6 +10,7 @@ import type {
   PromptChain,
   RunStepResult,
 } from "@/lib/types";
+import { IconTrash } from "./Icons";
 import WalkTheater from "./WalkTheater";
 
 function shortDate(value: string) {
@@ -43,6 +46,8 @@ export default function RunsBoard({
   missing: boolean;
   error?: string;
 }) {
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
   const chainName = Object.fromEntries(chains.map((chain) => [chain.id, chain.name]));
   const walks = useMemo(
     () => buildWalkList(requests, responses),
@@ -87,28 +92,48 @@ export default function RunsBoard({
               const steps = walkSteps(item, chainName[item.chainId ?? ""] || "Chain");
               const last = steps[steps.length - 1]?.output || "Still walking.";
               return (
-                <button
-                  key={item.requestId}
-                  type="button"
-                  role="listitem"
-                  className={`walk-card ${activeId === item.requestId ? "active" : ""}`}
-                  onClick={() => setActiveId(item.requestId)}
-                >
-                  {item.imageUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={item.imageUrl} alt="" className="walk-card-thumb" />
-                  ) : (
-                    <div className="walk-card-thumb walk-card-thumb-empty" />
-                  )}
-                  <div className="walk-card-body">
-                    <span className="kicker">{item.status}</span>
-                    <strong className="walk-card-title">
-                      {chainName[item.chainId ?? ""] || "Loose walk"}
-                    </strong>
-                    <p className="walk-card-line">{last.split("\n")[0]}</p>
-                    <span className="count-pill">{shortDate(item.createdAt)}</span>
-                  </div>
-                </button>
+                <div key={item.requestId} className="walk-card-wrap" role="listitem">
+                  <button
+                    type="button"
+                    className={`walk-card ${activeId === item.requestId ? "active" : ""}`}
+                    onClick={() => setActiveId(item.requestId)}
+                  >
+                    {item.imageUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={item.imageUrl} alt="" className="walk-card-thumb" />
+                    ) : (
+                      <div className="walk-card-thumb walk-card-thumb-empty" />
+                    )}
+                    <div className="walk-card-body">
+                      <span className="kicker">{item.status}</span>
+                      <strong className="walk-card-title">
+                        {chainName[item.chainId ?? ""] || "Loose walk"}
+                      </strong>
+                      <p className="walk-card-line">{last.split("\n")[0]}</p>
+                      <span className="count-pill">{shortDate(item.createdAt)}</span>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost danger-btn walk-card-delete"
+                    disabled={isPending}
+                    onClick={() => {
+                      if (!window.confirm("Delete this walk?")) return;
+                      startTransition(async () => {
+                        const res = await deleteWalkAction(item.requestId);
+                        if (!res.success) return;
+                        if (activeId === item.requestId) {
+                          const next = walks.find((walk) => walk.requestId !== item.requestId);
+                          setActiveId(next?.requestId ?? null);
+                        }
+                        router.refresh();
+                      });
+                    }}
+                  >
+                    <IconTrash size={14} />
+                    Delete
+                  </button>
+                </div>
               );
             })}
           </div>

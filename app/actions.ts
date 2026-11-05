@@ -7,6 +7,7 @@ import {
 } from "@google/genai";
 import { revalidatePath } from "next/cache";
 import { requireStudioAdmin } from "@/lib/auth";
+import { CANDIDATE_MODELS, isUsableModelKey } from "@/lib/gemini";
 import { encodeRunRecord, parseRunRecord, type ChainWalk } from "@/lib/runMedia";
 import { createClient } from "@/lib/supabaseServer";
 import type {
@@ -27,11 +28,6 @@ const ALLOWED_TYPES = new Set([
 const MAX_BYTES = 4.5 * 1024 * 1024;
 const DEFAULT_CAPTION_PROMPT =
   "Look at this photograph. Write one short caption that only works because of what is actually in the frame.";
-const CANDIDATE_MODELS = [
-  "gemini-2.5-flash",
-  "gemini-2.0-flash",
-  "gemini-3.5-flash",
-];
 
 function revalidateStudio(chainId?: string) {
   revalidatePath("/");
@@ -167,12 +163,11 @@ async function generateStepText(
     throw new Error("GEMINI_API_KEY is not configured on the server.");
   }
 
+  const preferred = isUsableModelKey(preferredKey) ? preferredKey : null;
   const keys = [
-    preferredKey,
-    ...CANDIDATE_MODELS.filter((key) => key !== preferredKey),
-  ]
-    .filter((key): key is string => Boolean(key))
-    .slice(0, 3);
+    preferred,
+    ...CANDIDATE_MODELS.filter((key) => key !== preferred),
+  ].filter((key): key is string => Boolean(key));
 
   let lastError: unknown = null;
   for (const model of keys) {
@@ -222,13 +217,6 @@ export async function createChainAction(): Promise<{
     return { success: false, error: error?.message || "Could not create a chain." };
   }
 
-  const { data: models } = await supabase
-    .from("llm_models")
-    .select("id")
-    .eq("is_enabled", true)
-    .limit(1);
-
-  const modelId = models?.[0]?.id ?? null;
   await supabase.from("prompt_chain_steps").insert([
     {
       chain_id: chain.id,
@@ -236,7 +224,7 @@ export async function createChainAction(): Promise<{
       name: "Describe the photo",
       prompt_template:
         "Look at this photograph. Describe what is actually in the frame in a few sentences — objects, faces, pose, setting, and timing. No caption yet.",
-      model_id: modelId,
+      model_id: null,
     },
     {
       chain_id: chain.id,
@@ -244,7 +232,7 @@ export async function createChainAction(): Promise<{
       name: "Find the joke",
       prompt_template:
         "Here is a description of a photo:\n{{previous}}\n\nSay something funny about it. Dry, specific, not generic. One or two sentences.",
-      model_id: modelId,
+      model_id: null,
     },
     {
       chain_id: chain.id,
@@ -252,7 +240,7 @@ export async function createChainAction(): Promise<{
       name: "Five captions",
       prompt_template:
         "Here is a funny take on a photo:\n{{previous}}\n\nWrite five short, funny captions. Each on its own line. No numbers, no quotes, no hashtags. Each caption should only work because of what is in the frame.",
-      model_id: modelId,
+      model_id: null,
     },
   ]);
 
@@ -351,6 +339,118 @@ export async function deleteChainAction(
   const { error } = await supabase.from("prompt_chains").delete().eq("id", id);
   if (error) return { success: false, error: error.message };
   revalidateStudio();
+  return { success: true };
+}
+
+async function deleteWalkRecords(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  requestIds: string[]
+) {
+  if (requestIds.length === 0) return;
+
+  const { data: requests } = await supabase
+    .from("generation_requests")
+    .select("id, prompt, chain_id")
+    .in("id", requestIds);
+
+  const imageUrls: string[] = [];
+  const altTexts: string[] = [];
+  for (const request of requests ?? []) {
+    const parsed = parseRunRecord(String(request.prompt || ""));
+    if (parsed.imageUrl) imageUrls.push(parsed.imageUrl);
+    if (request.chain_id) {
+      altTexts.push(`chain:${request.chain_id}|request:${request.id}`);
+    }
+  }
+
+  await supabase.from("llm_responses").delete().in("request_id", requestIds);
+
+  const imageRows: Array<{ id: string; storage_path: string | null }> = [];
+  if (imageUrls.length > 0) {
+    const { data } = await supabase
+      .from("images")
+      .select("id, storage_path")
+      .in("image_url", imageUrls);
+    imageRows.push(...((data ?? []) as typeof imageRows));
+  }
+  if (altTexts.length > 0) {
+    const { data } = await supabase
+      .from("images")
+      .select("id, storage_path")
+      .in("alt_text", altTexts);
+    imageRows.push(...((data ?? []) as typeof imageRows));
+  }
+
+  const seen = new Set<string>();
+  const uniqueImages = imageRows.filter((row) => {
+    if (seen.has(row.id)) return false;
+    seen.add(row.id);
+    return true;
+  });
+
+  const pathsByBucket = new Map<string, string[]>();
+  for (const row of uniqueImages) {
+    const path = String(row.storage_path || "");
+    if (!path) continue;
+    const bucket = path.startsWith("studio/") ? FALLBACK_BUCKET : IMAGE_BUCKET;
+    const list = pathsByBucket.get(bucket) ?? [];
+    list.push(path);
+    pathsByBucket.set(bucket, list);
+  }
+  for (const [bucket, paths] of pathsByBucket) {
+    await supabase.storage.from(bucket).remove(paths);
+  }
+
+  if (uniqueImages.length > 0) {
+    await supabase
+      .from("images")
+      .delete()
+      .in(
+        "id",
+        uniqueImages.map((row) => row.id)
+      );
+  }
+
+  await supabase.from("generation_requests").delete().in("id", requestIds);
+}
+
+export async function deleteWalkAction(
+  requestId: string
+): Promise<{ success: boolean; error?: string }> {
+  const gate = await requireStudioAdmin();
+  if (!gate.ok) return { success: false, error: gate.error };
+
+  const supabase = await createClient();
+  const { data: request } = await supabase
+    .from("generation_requests")
+    .select("id, chain_id")
+    .eq("id", requestId)
+    .maybeSingle();
+  if (!request) return { success: false, error: "That walk is already gone." };
+
+  await deleteWalkRecords(supabase, [requestId]);
+  revalidateStudio(request.chain_id ?? undefined);
+  return { success: true };
+}
+
+export async function deleteChainMediaAction(
+  chainId: string
+): Promise<{ success: boolean; error?: string }> {
+  const gate = await requireStudioAdmin();
+  if (!gate.ok) return { success: false, error: gate.error };
+
+  const supabase = await createClient();
+  const { data: requests, error } = await supabase
+    .from("generation_requests")
+    .select("id")
+    .eq("chain_id", chainId);
+  if (error) return { success: false, error: error.message };
+
+  await deleteWalkRecords(
+    supabase,
+    (requests ?? []).map((row) => row.id as string)
+  );
+  revalidateStudio(chainId);
   return { success: true };
 }
 

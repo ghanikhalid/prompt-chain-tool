@@ -135,14 +135,17 @@ export async function ensureStarterChains() {
   if (!gate.ok) return;
 
   const supabase = await createClient();
-  const now = new Date().toISOString();
 
-  const [{ data: mix }, { data: models }] = await Promise.all([
-    supabase.from("prompt_chain_mix").select("id").limit(1).maybeSingle(),
-    supabase.from("llm_models").select("id").eq("is_enabled", true).limit(1),
-  ]);
+  if (RETIRED_CHAIN_IDS.length > 0) {
+    await supabase.from("prompt_chains").delete().in("id", RETIRED_CHAIN_IDS);
+  }
 
-  const modelId = models?.[0]?.id ?? FALLBACK_MODEL_ID;
+  const [{ data: mix }, { data: existingChains }, { data: pinnedSteps }] =
+    await Promise.all([
+      supabase.from("prompt_chain_mix").select("id").limit(1).maybeSingle(),
+      supabase.from("prompt_chains").select("id"),
+      supabase.from("prompt_chain_steps").select("id, model_id"),
+    ]);
 
   let mixId = mix?.id as string | undefined;
   if (!mixId) {
@@ -159,80 +162,57 @@ export async function ensureStarterChains() {
   }
   if (!mixId) return;
 
-  if (RETIRED_CHAIN_IDS.length > 0) {
-    await supabase.from("prompt_chains").delete().in("id", RETIRED_CHAIN_IDS);
-  }
-
-  const keeperIds = STARTER_CHAINS.map((chain) => chain.id);
+  const existingIds = new Set((existingChains ?? []).map((row) => row.id as string));
+  const insertedIds: string[] = [];
 
   for (const chain of STARTER_CHAINS) {
-    await supabase.from("prompt_chains").upsert({
+    if (existingIds.has(chain.id)) continue;
+
+    await supabase.from("prompt_chains").insert({
       id: chain.id,
       name: chain.name,
       description: chain.description,
       is_active: true,
-      updated_at: now,
     });
 
-    const keepStepIds = chain.steps.map((step) => step.id);
-    const { data: existingSteps } = await supabase
-      .from("prompt_chain_steps")
-      .select("id")
-      .eq("chain_id", chain.id);
-    const extra = (existingSteps ?? [])
-      .map((row) => row.id as string)
-      .filter((id) => !keepStepIds.includes(id));
-    if (extra.length > 0) {
-      await supabase.from("prompt_chain_steps").delete().in("id", extra);
-    }
-
-    for (const [index, step] of chain.steps.entries()) {
-      await supabase.from("prompt_chain_steps").upsert({
+    await supabase.from("prompt_chain_steps").insert(
+      chain.steps.map((step, index) => ({
         id: step.id,
         chain_id: chain.id,
         step_order: index + 1,
         name: step.name,
         prompt_template: step.prompt_template,
-        model_id: modelId,
-        updated_at: now,
-      });
-    }
+        model_id: null,
+      }))
+    );
+    insertedIds.push(chain.id);
   }
+
+  const onlySeededModels = (pinnedSteps ?? []).every(
+    (row) => !row.model_id || row.model_id === FALLBACK_MODEL_ID
+  );
+  if (onlySeededModels) {
+    await supabase
+      .from("prompt_chain_steps")
+      .update({ model_id: null })
+      .eq("model_id", FALLBACK_MODEL_ID);
+  }
+
+  if (insertedIds.length === 0) return;
 
   const { data: mixRows } = await supabase
     .from("prompt_chain_mix_entries")
-    .select("id, chain_id")
+    .select("chain_id")
     .eq("mix_id", mixId);
-
-  const stale = (mixRows ?? []).filter(
-    (row) => !keeperIds.includes(row.chain_id as string)
-  );
-  if (stale.length > 0) {
-    await supabase
-      .from("prompt_chain_mix_entries")
-      .delete()
-      .in(
-        "id",
-        stale.map((row) => row.id)
-      );
-  }
-
-  const mixByChain = new Map(
-    (mixRows ?? []).map((row) => [row.chain_id as string, row.id as string])
-  );
-  for (const chain of STARTER_CHAINS) {
-    const entryId = mixByChain.get(chain.id);
-    if (entryId) {
-      await supabase
-        .from("prompt_chain_mix_entries")
-        .update({ weight: chain.weight })
-        .eq("id", entryId);
-    } else {
-      await supabase.from("prompt_chain_mix_entries").insert({
-        mix_id: mixId,
-        chain_id: chain.id,
-        weight: chain.weight,
-      });
-    }
+  const inMix = new Set((mixRows ?? []).map((row) => row.chain_id as string));
+  const missing = STARTER_CHAINS.filter(
+    (chain) => insertedIds.includes(chain.id) && !inMix.has(chain.id)
+  ).map((chain) => ({
+    mix_id: mixId,
+    chain_id: chain.id,
+    weight: chain.weight,
+  }));
+  if (missing.length > 0) {
+    await supabase.from("prompt_chain_mix_entries").insert(missing);
   }
 }

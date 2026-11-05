@@ -23,6 +23,9 @@ export default async function MixPage() {
   return (
     <StudioFrame user={ctx.user} active="mix">
       <MixBoard
+        key={`${data.mixes.rows[0]?.updated_at ?? "mix"}-${data.entries.rows
+          .map((entry) => `${entry.chain_id}:${entry.weight}`)
+          .join("|")}`}
         chains={data.chains.rows}
         mixes={data.mixes.rows}
         entries={data.entries.rows}

@@ -2304,6 +2304,12 @@ html[data-theme="light"] .btn-primary {
   padding-right: 4px;
 }
 
+.walk-card-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .walk-card {
   display: grid;
   grid-template-columns: 72px 1fr;
@@ -2316,6 +2322,10 @@ html[data-theme="light"] .btn-primary {
   background: var(--surface-card);
   color: inherit;
   cursor: pointer;
+}
+
+.walk-card-delete {
+  align-self: flex-start;
 }
 
 .walk-card.active {

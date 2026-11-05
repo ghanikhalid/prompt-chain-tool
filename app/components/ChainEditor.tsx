@@ -5,10 +5,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   deleteChainAction,
+  deleteChainMediaAction,
   reorderStepsAction,
   saveChainAction,
 } from "@/app/actions";
 import GeneratedMedia from "./GeneratedMedia";
+import { isUsableModelKey } from "@/lib/gemini";
 import type { ChainMediaItem } from "@/lib/runMedia";
 import { IconPlus, IconTrash } from "./Icons";
 import type {
@@ -40,6 +42,8 @@ export default function ChainEditor({
   const [name, setName] = useState(chain.name);
   const [description, setDescription] = useState(chain.description ?? "");
   const [active, setActive] = useState(chain.is_active);
+  const usableModels = models.filter((model) => isUsableModelKey(model.model_key));
+  const usableModelIds = new Set(usableModels.map((model) => model.id));
   const [drafts, setDrafts] = useState<DraftStep[]>(
     [...steps]
       .sort((a, b) => a.step_order - b.step_order)
@@ -47,7 +51,7 @@ export default function ChainEditor({
         id: step.id,
         name: step.name,
         prompt_template: step.prompt_template,
-        model_id: step.model_id,
+        model_id: step.model_id && usableModelIds.has(step.model_id) ? step.model_id : null,
       }))
   );
   const [status, setStatus] = useState<string | null>(null);
@@ -90,7 +94,13 @@ export default function ChainEditor({
         name,
         description,
         is_active: active,
-        steps: drafts,
+        steps: drafts.map((step) => ({
+          ...step,
+          model_id:
+            step.model_id && usableModelIds.has(step.model_id)
+              ? step.model_id
+              : null,
+        })),
       });
       if (!res.success) {
         setOk(false);
@@ -235,8 +245,8 @@ export default function ChainEditor({
                       )
                     }
                   >
-                    <option value="">Whatever is free</option>
-                    {models.map((model) => (
+                    <option value="">Whatever is available</option>
+                    {usableModels.map((model) => (
                       <option key={model.id} value={model.id}>
                         {model.name}
                       </option>
@@ -279,7 +289,7 @@ export default function ChainEditor({
                     name: `Step ${prev.length + 1}`,
                     prompt_template:
                       "Rewrite {{previous}} so it only works because of a specific detail in the photo. Keep it under 12 words.",
-                    model_id: models[0]?.id ?? null,
+                    model_id: null,
                   },
                 ])
               }
@@ -313,7 +323,37 @@ export default function ChainEditor({
       <section>
         <div className="feed-header">
           <h2 className="section-title">Media from this chain</h2>
-          <span className="count-pill">{media.length}</span>
+          <div className="admin-toolbar">
+            <span className="count-pill">{media.length}</span>
+            {media.length > 0 ? (
+              <button
+                type="button"
+                className="btn-ghost danger-btn"
+                disabled={isPending}
+                onClick={() => {
+                  if (
+                    !window.confirm(
+                      "Delete every still and walk from this chain?"
+                    )
+                  ) {
+                    return;
+                  }
+                  startTransition(async () => {
+                    const res = await deleteChainMediaAction(chain.id);
+                    if (!res.success) {
+                      setOk(false);
+                      setStatus(res.error || "Could not delete that media.");
+                      return;
+                    }
+                    router.refresh();
+                  });
+                }}
+              >
+                <IconTrash size={14} />
+                Delete all
+              </button>
+            ) : null}
+          </div>
         </div>
         <GeneratedMedia items={media} />
       </section>
